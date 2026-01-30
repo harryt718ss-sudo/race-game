@@ -1,639 +1,343 @@
-import tkinter as tk
+import sys
 import random
 import math
+import time
+from dataclasses import dataclass
 
-class RacingGame:
-    def __init__(self, master):
-        self.master = master
-        self.countdown = 3  # 倒數秒數
-        self.countdown_active = True
+print("Checking environment...")
+try:
+    import pygame
+except ImportError as e:
+    print(f"Error: Missing pygame. Please run 'pip install pygame'")
+    sys.exit()
 
-        self.master.title('彎道賽車遊戲')
-        self.width = 400
-        self.height = 600
-        self.road_w = 300
-        self.road_x_base = (self.width - self.road_w) // 2
-        self.finish_line = 80 * 40
-        self.world_height = 600 * 40
-        self.canvas = tk.Canvas(master, width=self.width, height=self.height, bg='darkgreen')
-        self.canvas.pack()
-        self.info_label = tk.Label(master, text='', font=('Arial', 14))
-        self.info_label.pack()
+# --- 遊戲設定 ---
+WIDTH, HEIGHT = 800, 600
+ROAD_WIDTH = 500      
+FINISH_DIST = 80000   # 距離拉長，讓速度差距造成的壓力更明顯
 
-        self.master.after(0, self.start_countdown)
+# --- 玩家設定 (保持操控感) ---
+P_BASE = 75           
+P_BOOST = 130         
+P_OFFROAD = 30        
+STEER_SPEED = 600     
 
-    def start_countdown(self):
-        if self.countdown > 0:
-            self.info_label.config(text=f'倒數 {self.countdown} 秒...')
-            self.countdown -= 1
-            self.master.after(1000, self.start_countdown)
-        else:
-            self.countdown_active = False
-            self.info_label.config(text='')
-    # (移除重複的 __init__ 方法)
-        self.world_height = 600 * 40
-        self.canvas = tk.Canvas(master, width=self.width, height=self.height, bg='darkgreen')
-        self.canvas.pack()
-        self.info_label = tk.Label(master, text='', font=('Arial', 14))
-        self.info_label.pack()
+# ★★★ 對手增強設定 (BOSS 級) ★★★
+E_BASE = 80           # 它的基礎極速比你快 (你 75 vs 他 80)
+                      # 這意味著直線跑久了你一定會輸，必須靠彎道或氮氣
 
-        # 玩家車
-        self.car_w = 40
-        self.car_h = 70
-        self.car_x = self.width // 2
-        self.car_y = self.world_height - 100
+# 遊戲狀態
+STATE_COUNTDOWN = 0
+STATE_RACING = 1
+STATE_GAMEOVER = 2
 
-        # 對手車
-        self.rival_w = 40
-        self.rival_h = 70
-        self.rival_x = self.width // 2 + 60
-        self.rival_y = self.world_height - 100
-        self.rival_dir_x = 0
-        self.rival_dir_y = 0
+@dataclass
+class Car:
+    x: float
+    y: float
+    color: tuple
+    lane_offset: float = 0.0
 
-        # 速度設定
-        self.base_speed = 30
-        self.fast_speed = 40
-        self.is_fast = False
-        self.fast_timer = 0  # 加速剩餘幀數
-        self.fast_timer_max = 30  # 1秒(30fps)
-        self.fast_cooldown = False
-        self.fast_used = False  # 玩家加速僅限一次
+class HardcoreRacing:
+    def __init__(self):
+        print("Initializing Hardcore Mode...")
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Racing: HARDCORE CHALLENGE")
+        self.clock = pygame.time.Clock()
+        
+        try:
+            self.font = pygame.font.SysFont("arial", 22, bold=True)
+            self.big_font = pygame.font.SysFont("arial", 80, bold=True)
+            self.huge_font = pygame.font.SysFont("arial", 120, bold=True)
+            self.arrow_font = pygame.font.SysFont("monospace", 100, bold=True)
+        except:
+            self.font = pygame.font.Font(None, 22)
+            self.big_font = pygame.font.Font(None, 80)
+            self.huge_font = pygame.font.Font(None, 120)
+            self.arrow_font = pygame.font.Font(None, 100)
 
-        # 障礙車
-        self.obstacle_w = 40
-        self.obstacle_h = 70
-        self.obstacles = []  # [(x, y, color)]
-        self.max_obstacles = 60  # 增加障礙車數（3倍）
+        self.player = Car(WIDTH/2, 0.0, (0, 150, 255))
+        # 對手改為黑色，看起來更殺
+        self.enemy = Car(WIDTH/2 + 120, 0.0, (40, 40, 40), lane_offset=120)
+        
+        self.road_map = [] 
+        self.generate_track() 
 
+        self.can_boost = True
+        self.is_boosting = False
+        self.boost_time = 0.0
+        
+        self.state = STATE_COUNTDOWN
+        self.start_timestamp = time.time() 
+        self.winner = None 
+        self.blink_timer = 0
+        
         self.running = True
-        self.game_winner = None
-        self.camera_offset = 0
-        self.pressed_keys = set()
 
-        self.master.bind('<KeyPress>', self.on_key_press)
-        self.master.bind('<KeyRelease>', self.on_key_release)
-        self.master.bind('<Return>', self.restart_game)
-        self.update()
+    def generate_track(self):
+        print("Generating technical track...")
+        current_x = WIDTH / 2
+        current_angle = 0.0 
+        y = 0
+        
+        # 起跑直線
+        for _ in range(2000):
+            self.road_map.append(current_x)
+            y += 1
+            
+        loop_guard = 0
+        while y < FINISH_DIST + HEIGHT + 2000:
+            loop_guard += 1
+            if loop_guard > 200000: break
 
-    def get_road_x(self, y):
-        # 彎道設計：正弦波型彎道，幅度加大
-        return self.road_x_base + int(140 * math.sin(y / 800))
+            segment_style = random.choices(
+                ["STRAIGHT", "CURVE_LEFT", "CURVE_RIGHT"],
+                weights=[50, 25, 25] # 彎道稍微多一點點
+            )[0]
 
-    def spawn_obstacle(self):
-        y = random.randint(0, self.world_height - 200)
-        road_x = self.get_road_x(y)
-        x = random.randint(road_x + self.obstacle_w//2, road_x + self.road_w - self.obstacle_w//2)
-        color = random.choice(['red', 'orange', 'purple', 'brown', 'gray'])
-        self.obstacles.append([x, y, color])
+            if current_x < 200: segment_style = "CURVE_RIGHT"
+            elif current_x > WIDTH + 200: segment_style = "CURVE_LEFT"
 
-    def on_key_press(self, event):
-        self.pressed_keys.add(event.keysym)
-        # 按空白鍵啟動加速（僅限一次）
-        if event.keysym == 'space' and not self.fast_cooldown and self.fast_timer == 0 and not self.fast_used:
-            self.is_fast = True
-            self.fast_timer = self.fast_timer_max
-            self.fast_cooldown = True
-            self.fast_used = True
+            length = random.randint(2000, 5000) 
+            angle_target = 0.0 
 
-    def on_key_release(self, event):
-        if event.keysym in self.pressed_keys:
-            self.pressed_keys.remove(event.keysym)
+            if segment_style == "STRAIGHT": angle_target = 0.0
+            elif segment_style == "CURVE_LEFT": angle_target = -0.3 
+            elif segment_style == "CURVE_RIGHT": angle_target = 0.3
 
-    def restart_game(self, event):
-        if not self.running:
-            self.car_x = self.width // 2
-            self.car_y = self.world_height - 100
-            self.rival_x = self.width // 2 + 60
-            self.rival_y = self.world_height - 100
-            self.obstacles = []
-            self.running = True
-            self.game_winner = None
-            self.fast_timer = 0
-            self.fast_cooldown = False
-            self.is_fast = False
-            self.fast_used = False
-            self.update()
+            for i in range(length):
+                diff = angle_target - current_angle
+                current_angle += diff * 0.001 
+                current_x += current_angle * 0.8
+                self.road_map.append(current_x)
+                y += 1
+                if y >= FINISH_DIST + HEIGHT + 2000: break
 
-    def move_player(self):
-        if self.countdown_active:
-            return  # 倒數時禁止移動
-        # 判斷是否在賽道範圍
-        road_x = self.get_road_x(self.car_y)
-        on_road = (road_x + self.car_w//2 <= self.car_x <= road_x + self.road_w - self.car_w//2)
-        move = self.fast_speed if self.is_fast else self.base_speed
-        if not on_road:
-            move = 10
-        dx = dy = 0
-        if 'Left' in self.pressed_keys and self.car_x - self.car_w//2 > 0:
-            dx -= move
-        if 'Right' in self.pressed_keys and self.car_x + self.car_w//2 < self.width:
-            dx += move
-        if 'Up' in self.pressed_keys and self.car_y - self.car_h//2 > 0:
-            dy -= move
-        if 'Down' in self.pressed_keys and self.car_y + self.car_h//2 < self.world_height:
-            dy += move
-        self.car_x += dx
-        self.car_y += dy
-        # 限制車子不出畫面
-        self.car_x = max(self.car_w//2, min(self.width - self.car_w//2, self.car_x))
+    def get_road_center(self, y):
+        index = int(y)
+        if index < 0: return WIDTH / 2
+        if index >= len(self.road_map): return self.road_map[-1]
+        return self.road_map[index]
 
     def update(self):
-        # 加速計時
-        if self.fast_timer > 0:
-            self.fast_timer -= 1
-            if self.fast_timer == 0:
-                self.is_fast = False
-                self.fast_cooldown = True
-        elif self.fast_cooldown and 'space' not in self.pressed_keys:
-            self.fast_cooldown = False
+        dt = self.clock.tick(60) / 1000.0
+        if dt > 0.1: dt = 0.1 
+        current_time = time.time()
+        self.blink_timer += dt * 5
 
-        if self.countdown_active:
-            self.draw()
-            return
-        if not self.running:
-            self.draw()
-            return
-        # 障礙車數量維持
-        while len(self.obstacles) < self.max_obstacles:
-            self.spawn_obstacle()
+        if self.state == STATE_COUNTDOWN:
+            elapsed = current_time - self.start_timestamp
+            if elapsed >= 3.5: self.state = STATE_RACING
+            return 
 
-        # 玩家移動
-        self.move_player()
+        if self.state == STATE_GAMEOVER: return 
 
-        # 玩家與障礙車碰撞
-        for obs in self.obstacles:
-            if (abs(obs[0] - self.car_x) < (self.obstacle_w + self.car_w)//2) and (abs(obs[1] - self.car_y) < (self.obstacle_h + self.car_h)//2):
-                if self.car_y > obs[1]:
-                    self.car_y = min(self.world_height - self.car_h//2, self.car_y + 40)
-                else:
-                    self.car_y = max(self.car_h//2, self.car_y - 40)
-        # 對手與障礙車碰撞
-        for obs in self.obstacles:
-            if (abs(obs[0] - self.rival_x) < (self.obstacle_w + self.rival_w)//2) and (abs(obs[1] - self.rival_y) < (self.obstacle_h + self.rival_h)//2):
-                if self.rival_y > obs[1]:
-                    self.rival_y = min(self.world_height - self.rival_h//2, self.rival_y + 40)
-                else:
-                    self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-        # 玩家與對手車碰撞
-        if (abs(self.car_x - self.rival_x) < (self.car_w + self.rival_w)//2) and (abs(self.car_y - self.rival_y) < (self.car_h + self.rival_h)//2):
-            if self.car_y < self.rival_y:
-                self.car_y = max(self.car_h//2, self.car_y - 40)
-                self.rival_y = min(self.world_height - self.rival_h//2, self.rival_y + 40)
-            else:
-                self.car_y = min(self.world_height - self.car_h//2, self.car_y + 40)
-                self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-            if self.car_x < self.rival_x:
-                self.car_x = max(self.get_road_x(self.car_y) + self.car_w//2, self.car_x - 40)
-                self.rival_x = min(self.get_road_x(self.rival_y) + self.road_w - self.rival_w//2, self.rival_x + 40)
-            else:
-                self.car_x = min(self.get_road_x(self.car_y) + self.road_w - self.car_w//2, self.car_x + 40)
-                self.rival_x = max(self.get_road_x(self.rival_y) + self.rival_w//2, self.rival_x - 40)
+        # --- 玩家操控 ---
+        keys = pygame.key.get_pressed()
+        move_dist = STEER_SPEED * dt
+        
+        if keys[pygame.K_LEFT]:  self.player.x -= move_dist
+        if keys[pygame.K_RIGHT]: self.player.x += move_dist
 
-        # 對手 AI 控制（自動往終點，偶爾閃避障礙）
-        self.rival_dir_x = 0
-        self.rival_dir_y = -1
-        road_x_rival = self.get_road_x(self.rival_y)
-        for obs in self.obstacles:
-            if abs(obs[1] - (self.rival_y - self.rival_h//2)) < 60 and abs(obs[0] - self.rival_x) < self.rival_w:
-                self.rival_dir_x = random.choice([-1, 1])
-                break
-        rival_move = self.fast_speed if self.rival_y < self.car_y else self.base_speed
-        if self.rival_x - self.rival_w//2 > road_x_rival and self.rival_dir_x == -1:
-            self.rival_x -= rival_move
-        if self.rival_x + self.rival_w//2 < road_x_rival + self.road_w and self.rival_dir_x == 1:
-            self.rival_x += rival_move
-        if self.rival_y - self.rival_h//2 > 0 and self.rival_dir_y == -1:
-            self.rival_y -= rival_move
-        if self.rival_y + self.rival_h//2 < self.world_height and self.rival_dir_y == 1:
-            self.rival_y += rival_move
-        self.rival_x = max(road_x_rival + self.rival_w//2, min(road_x_rival + self.road_w - self.rival_w//2, self.rival_x))
+        current_road_x = self.get_road_center(self.player.y)
+        limit_offset = (ROAD_WIDTH / 2) + 20 
+        
+        if self.player.x < current_road_x - limit_offset: self.player.x = current_road_x - limit_offset
+        elif self.player.x > current_road_x + limit_offset - 46: self.player.x = current_road_x + limit_offset - 46
+        
+        road_left = current_road_x - (ROAD_WIDTH / 2)
+        road_right = current_road_x + (ROAD_WIDTH / 2)
+        player_offroad = self.player.x < (road_left - 10) or (self.player.x + 46) > (road_right + 10)
 
-        # 終點判斷
-        if self.car_y - self.car_h//2 <= self.finish_line:
-            self.running = False
-            self.game_winner = '玩家'
-        elif self.rival_y - self.rival_h//2 <= self.finish_line:
-            self.running = False
-            self.game_winner = '對手'
-
-        # 畫面跟隨玩家
-        self.camera_offset = self.car_y - self.height // 2
-        self.camera_offset = max(0, min(self.camera_offset, self.world_height - self.height))
-
-        # 顯示加速剩餘時間
-        fast_sec = round(self.fast_timer / 30, 2) if self.fast_timer > 0 else 0
-        if not self.fast_used:
-            self.info_label.config(text=f'加速剩餘: {fast_sec} 秒   空白鍵啟動加速(僅限一次)')
+        if self.is_boosting:
+            spd = P_BOOST if current_time - self.boost_time < 3.0 else P_BASE
+            if spd == P_BASE: self.is_boosting = False
         else:
-            self.info_label.config(text=f'加速已用完')
+            spd = P_OFFROAD if player_offroad else P_BASE
 
-        self.draw()
-        self.master.after(30, self.update)
+        self.player.y += spd * dt * 45
+
+        # --- 對手 AI (強敵邏輯) ---
+        enemy_center = self.get_road_center(self.enemy.y)
+        target_x = enemy_center + self.enemy.lane_offset
+        
+        # 它的反應速度變快了
+        self.enemy.x += (target_x - self.enemy.x) * 3.5 * dt
+        
+        enemy_offroad = self.enemy.x < (enemy_center - ROAD_WIDTH/2 - 10) or \
+                        (self.enemy.x + 46) > (enemy_center + ROAD_WIDTH/2 + 10)
+        
+        if enemy_offroad:
+            current_e_speed = P_OFFROAD
+        else:
+            # ★ 惡夢級橡皮筋機制
+            dist_diff = self.enemy.y - self.player.y
+            
+            if dist_diff < -200: 
+                # 落後一點點：立刻開外掛加速 (1.5倍)
+                current_e_speed = E_BASE * 1.5
+            elif dist_diff < 50:
+                # 緊貼在你後面：保持超車優勢 (1.2倍)
+                current_e_speed = E_BASE * 1.2
+            elif dist_diff > 600:
+                # 領先非常多：稍微減速一點點防止消失，但依然很快
+                current_e_speed = E_BASE * 0.95
+            else:
+                # 領先狀態：保持全速 (1.05倍)，試圖甩開你
+                current_e_speed = E_BASE * 1.05
+
+        self.enemy.y += current_e_speed * dt * 45
+        
+        # 頻繁切換車道 (更加躁動)
+        if random.random() < 0.02: # 提高頻率
+            self.enemy.lane_offset = random.choice([-150, 0, 150])
+
+        # 勝負判定
+        if self.player.y >= FINISH_DIST:
+            self.state = STATE_GAMEOVER
+            self.winner = "PLAYER"
+        elif self.enemy.y >= FINISH_DIST:
+            self.state = STATE_GAMEOVER
+            self.winner = "ENEMY"
+
+    def draw_turn_assist(self):
+        look_ahead = 700 
+        current_x = self.get_road_center(self.player.y)
+        future_x = self.get_road_center(self.player.y + look_ahead)
+        diff = future_x - current_x
+        THRESHOLD = 100
+        
+        if abs(diff) > THRESHOLD:
+            direction = ">>>" if diff > 0 else "<<<"
+            if abs(diff) > 300:
+                base_color = (255, 50, 50) 
+                scale = 1.2
+            else:
+                base_color = (255, 220, 0) 
+                scale = 1.0
+                
+            text_surf = self.arrow_font.render(direction, True, base_color)
+            if scale != 1.0:
+                w = int(text_surf.get_width() * scale)
+                h = int(text_surf.get_height() * scale)
+                text_surf = pygame.transform.scale(text_surf, (w, h))
+
+            dest_rect = text_surf.get_rect(center=(WIDTH//2, HEIGHT//2 - 100))
+            shadow_surf = self.arrow_font.render(direction, True, (0,0,0))
+            if scale != 1.0:
+                 shadow_surf = pygame.transform.scale(shadow_surf, (int(shadow_surf.get_width()*scale), int(shadow_surf.get_height()*scale)))
+            shadow_rect = shadow_surf.get_rect(center=(WIDTH//2 + 3, HEIGHT//2 - 97))
+            
+            self.screen.blit(shadow_surf, shadow_rect)
+            self.screen.blit(text_surf, dest_rect)
 
     def draw(self):
-        self.canvas.delete('all')
-        # 畫彎道賽道
-        for y in range(0, self.height, 4):
-            wy = y + self.camera_offset
-            road_x = self.get_road_x(wy)
-            self.canvas.create_rectangle(road_x, y, road_x + self.road_w, y+4, fill='gray', width=0)
-        # 終點線
-        fy = self.finish_line - self.camera_offset
-        road_x_finish = self.get_road_x(self.finish_line)
-        if 0 <= fy <= self.height:
-            self.canvas.create_rectangle(road_x_finish, fy, road_x_finish + self.road_w, fy+6, fill='yellow')
-            self.canvas.create_text(road_x_finish + 30, fy+18, text='終點', fill='yellow', font=('Arial', 14))
-        # 賽道中線
-        for y in range(0, self.world_height, 40):
-            sy = y - self.camera_offset
-            if -20 <= sy <= self.height:
-                road_x = self.get_road_x(y)
-                self.canvas.create_rectangle(road_x + self.road_w//2 - 5, sy, road_x + self.road_w//2 + 5, sy+20, fill='white', width=0)
-        # 玩家車
-        x, y = self.car_x, self.car_y - self.camera_offset
-        self.canvas.create_rectangle(x - self.car_w//2, y - self.car_h//2, x + self.car_w//2, y + self.car_h//2, fill='blue', outline='black', width=2)
-        self.canvas.create_rectangle(x - 12, y - 25, x + 12, y - 5, fill='skyblue', outline='black')
-        self.canvas.create_oval(x - self.car_w//2 - 6, y - 20, x - self.car_w//2 + 6, y - 8, fill='black')
-        self.canvas.create_oval(x + self.car_w//2 - 6, y - 20, x + self.car_w//2 + 6, y - 8, fill='black')
-        self.canvas.create_oval(x - self.car_w//2 - 6, y + 20, x - self.car_w//2 + 6, y + 32, fill='black')
-        self.canvas.create_oval(x + self.car_w//2 - 6, y + 20, x + self.car_w//2 + 6, y + 32, fill='black')
-        # 對手車
-        rx, ry = self.rival_x, self.rival_y - self.camera_offset
-        self.canvas.create_rectangle(rx - self.rival_w//2, ry - self.rival_h//2, rx + self.rival_w//2, ry + self.rival_h//2, fill='green', outline='black', width=2)
-        self.canvas.create_rectangle(rx - 12, ry - 25, rx + 12, ry - 5, fill='lightgreen', outline='black')
-        self.canvas.create_oval(rx - self.rival_w//2 - 6, ry - 20, rx - self.rival_w//2 + 6, ry - 8, fill='black')
-        self.canvas.create_oval(rx + self.rival_w//2 - 6, ry - 20, rx + self.rival_w//2 + 6, ry - 8, fill='black')
-        self.canvas.create_oval(rx - self.rival_w//2 - 6, ry + 20, rx - self.rival_w//2 + 6, ry + 32, fill='black')
-        self.canvas.create_oval(rx + self.rival_w//2 - 6, ry + 20, rx + self.rival_w//2 + 6, ry + 32, fill='black')
-        # 障礙車
-        for ox, oy, color in self.obstacles:
-            sy = oy - self.camera_offset
-            if -self.obstacle_h <= sy <= self.height + self.obstacle_h:
-                self.canvas.create_rectangle(ox - self.obstacle_w//2, sy - self.obstacle_h//2, ox + self.obstacle_w//2, sy + self.obstacle_h//2, fill=color, outline='black', width=2)
-                self.canvas.create_rectangle(ox - 12, sy - 25, ox + 12, sy - 5, fill='pink', outline='black')
-                self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy - 20, ox - self.obstacle_w//2 + 6, sy - 8, fill='black')
-                self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy - 20, ox + self.obstacle_w//2 + 6, sy - 8, fill='black')
-                self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy + 20, ox - self.obstacle_w//2 + 6, sy + 32, fill='black')
-                self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy + 20, ox + self.obstacle_w//2 + 6, sy + 32, fill='black')
-        # 顯示勝利者
-        if not self.running and self.game_winner:
-            self.canvas.create_text(self.width//2, self.height//2, text=f'{self.game_winner}獲勝！', fill='gold', font=('Arial', 32))
-            self.canvas.create_text(self.width//2, self.height//2+40, text='按 Enter 重新開始', fill='yellow', font=('Arial', 18))
+        self.screen.fill((100, 160, 220)) 
+        pygame.draw.rect(self.screen, (34, 139, 34), (0, HEIGHT/2, WIDTH, HEIGHT/2)) 
 
-if __name__ == '__main__':
-    root = tk.Tk()
-    game = RacingGame(root)
-    root.mainloop()
-                    dx -= move
-                if 'Right' in self.pressed_keys and self.car_x + self.car_w//2 < self.road_x + self.road_w:
-                    dx += move
-                if 'Up' in self.pressed_keys and self.car_y - self.car_h//2 > 0:
-                    dy -= move
-                if 'Down' in self.pressed_keys and self.car_y + self.car_h//2 < self.world_height:
-                    dy += move
-                self.car_x += dx
-                self.car_y += dy
+        camera_x = self.player.x - (WIDTH / 2)
+        slice_height = 4
+        view_height = HEIGHT 
+        
+        for i in range(0, view_height, slice_height):
+            world_y = self.player.y + (view_height - i)
+            world_center_x = self.get_road_center(world_y)
+            screen_draw_x = world_center_x - camera_x
+            
+            segment_idx = int(world_y) // 200
+            is_dark = segment_idx % 2 == 0
+            
+            grass_col = (34, 139, 34) if is_dark else (0, 100, 0)
+            road_col = (100, 100, 100) if is_dark else (110, 110, 110)
+            curb_col = (255, 255, 255) if (int(world_y)//100)%2==0 else (200, 0, 0)
+            
+            draw_y = i
+            
+            pygame.draw.rect(self.screen, grass_col, (0, draw_y, WIDTH, slice_height))
+            pygame.draw.rect(self.screen, curb_col, (screen_draw_x - ROAD_WIDTH/2 - 15, draw_y, ROAD_WIDTH + 30, slice_height))
+            pygame.draw.rect(self.screen, road_col, (screen_draw_x - ROAD_WIDTH/2, draw_y, ROAD_WIDTH, slice_height))
+            
+            pygame.draw.rect(self.screen, (255, 255, 255), (screen_draw_x - ROAD_WIDTH/4, draw_y, 4, slice_height))
+            pygame.draw.rect(self.screen, (255, 255, 255), (screen_draw_x + ROAD_WIDTH/4, draw_y, 4, slice_height))
+            if (int(world_y) // 100) % 2 == 0:
+                 pygame.draw.rect(self.screen, (255, 255, 255), (screen_draw_x, draw_y, 4, slice_height))
 
-            def shift_down(self, event):
-                self.is_fast = True
+        # 車輛
+        enemy_screen_y = HEIGHT - 200 - (self.enemy.y - self.player.y)
+        enemy_screen_x = self.enemy.x - camera_x
+        if -100 < enemy_screen_y < HEIGHT:
+            pygame.draw.rect(self.screen, self.enemy.color, (int(enemy_screen_x), int(enemy_screen_y), 46, 70))
+            # 兇猛的紅色車尾燈
+            pygame.draw.rect(self.screen, (255, 0, 0), (int(enemy_screen_x)+5, int(enemy_screen_y)+5, 12, 6))
+            pygame.draw.rect(self.screen, (255, 0, 0), (int(enemy_screen_x)+29, int(enemy_screen_y)+5, 12, 6))
+            
+        player_draw_x = WIDTH / 2 - 23
+        pygame.draw.rect(self.screen, self.player.color, (int(player_draw_x), HEIGHT - 200, 46, 70))
+        # 玩家車燈
+        pygame.draw.rect(self.screen, (200, 0, 0), (int(player_draw_x)+5, HEIGHT - 135, 10, 5))
+        pygame.draw.rect(self.screen, (200, 0, 0), (int(player_draw_x)+31, HEIGHT - 135, 10, 5))
+        
+        if self.is_boosting:
+             pygame.draw.rect(self.screen, (255, 200, 0), (int(player_draw_x)+10, HEIGHT - 130, 26, 20))
 
-            def shift_up(self, event):
-                self.is_fast = False
+        # UI
+        prog = min(100, int(self.player.y / FINISH_DIST * 100))
+        pygame.draw.rect(self.screen, (0,0,0), (0,0,WIDTH, 60))
+        self.screen.blit(self.font.render(f"DIST: {prog}%", True, (255,255,255)), (20, 20))
+        
+        if self.can_boost and self.state == STATE_RACING:
+            self.screen.blit(self.font.render("NITRO [SPACE]", True, (0, 255, 255)), (WIDTH - 200, 20))
 
-            def restart_game(self, event):
-                if not self.running:
-                    self.car_x = self.width // 2
-                    self.car_y = self.world_height - 100
-                    self.rival_x = self.width // 2 + 60
-                    self.rival_y = self.world_height - 100
-                    self.obstacles = []
-                    self.running = True
-                    self.game_winner = None
-                    self.update()
+        self.draw_turn_assist()
 
-            def spawn_obstacle(self):
-                x = random.randint(self.road_x + self.obstacle_w//2, self.road_x + self.road_w - self.obstacle_w//2)
-                y = random.randint(0, self.world_height - 200)
-                color = random.choice(['red', 'orange', 'purple', 'brown', 'gray'])
-                self.obstacles.append([x, y, color])
+        if self.state == STATE_COUNTDOWN:
+            elapsed = time.time() - self.start_timestamp
+            remain = 3 - int(elapsed)
+            s = pygame.Surface((WIDTH, HEIGHT))
+            s.set_alpha(100)
+            s.fill((0,0,0))
+            self.screen.blit(s, (0,0))
+            if remain > 0:
+                txt = self.huge_font.render(str(remain), True, (255, 0, 0))
+            else:
+                txt = self.huge_font.render("GO!", True, (0, 255, 0))
+            self.screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - 100))
 
-            def update(self):
-                if not self.running:
-                    self.draw()
-                    return
-                # 障礙車數量維持
-                while len(self.obstacles) < self.max_obstacles:
-                    self.spawn_obstacle()
+        elif self.state == STATE_GAMEOVER:
+            s = pygame.Surface((WIDTH, HEIGHT))
+            s.set_alpha(150)
+            s.fill((0,0,0))
+            self.screen.blit(s, (0,0))
+            if self.winner == "PLAYER":
+                msg, col = "INCREDIBLE WIN!", (0, 255, 0)
+            else:
+                msg, col = "DEFEATED", (255, 0, 0)
+            txt = self.huge_font.render(msg, True, col)
+            self.screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - 50))
+            sub = self.font.render("Press ESC to Exit", True, (255,255,255))
+            self.screen.blit(sub, (WIDTH//2 - sub.get_width()//2, HEIGHT//2 + 80))
 
-                # 玩家移動（可同時多方向）
-                self.move_player()
+        pygame.display.flip()
 
-                # 玩家與障礙車碰撞
-                for obs in self.obstacles:
-                    if (abs(obs[0] - self.car_x) < (self.obstacle_w + self.car_w)//2) and (abs(obs[1] - self.car_y) < (self.obstacle_h + self.car_h)//2):
-                        # 撞到障礙車，彈開
-                        if self.car_y > obs[1]:
-                            self.car_y = min(self.world_height - self.car_h//2, self.car_y + 40)
-                        else:
-                            self.car_y = max(self.car_h//2, self.car_y - 40)
-                # 對手與障礙車碰撞
-                for obs in self.obstacles:
-                    if (abs(obs[0] - self.rival_x) < (self.obstacle_w + self.rival_w)//2) and (abs(obs[1] - self.rival_y) < (self.obstacle_h + self.rival_h)//2):
-                        if self.rival_y > obs[1]:
-                            self.rival_y = min(self.world_height - self.rival_h//2, self.rival_y + 40)
-                        else:
-                            self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-                # 玩家與對手車碰撞
-                if (abs(self.car_x - self.rival_x) < (self.car_w + self.rival_w)//2) and (abs(self.car_y - self.rival_y) < (self.car_h + self.rival_h)//2):
-                    if self.car_y < self.rival_y:
-                        self.car_y = max(self.car_h//2, self.car_y - 40)
-                        self.rival_y = min(self.world_height - self.rival_h//2, self.rival_y + 40)
-                    else:
-                        self.car_y = min(self.world_height - self.car_h//2, self.car_y + 40)
-                        self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-                    if self.car_x < self.rival_x:
-                        self.car_x = max(self.road_x + self.car_w//2, self.car_x - 40)
-                        self.rival_x = min(self.road_x + self.road_w - self.rival_w//2, self.rival_x + 40)
-                    else:
-                        self.car_x = min(self.road_x + self.road_w - self.car_w//2, self.car_x + 40)
-                        self.rival_x = max(self.road_x + self.rival_w//2, self.rival_x - 40)
-                # 對手 AI 控制（自動往終點，偶爾閃避障礙）
-                self.rival_dir_x = 0
-                self.rival_dir_y = -1
-                # 若前方有障礙，隨機左右閃避
-                for obs in self.obstacles:
-                    if abs(obs[1] - (self.rival_y - self.rival_h//2)) < 60 and abs(obs[0] - self.rival_x) < self.rival_w:
-                        self.rival_dir_x = random.choice([-1, 1])
-                        break
-                # 移動對手車
-                move = self.base_speed * (2 if random.random() < 0.1 else 1)
-                if self.rival_x - self.rival_w//2 > self.road_x and self.rival_dir_x == -1:
-                    self.rival_x -= move
-                if self.rival_x + self.rival_w//2 < self.road_x + self.road_w and self.rival_dir_x == 1:
-                    self.rival_x += move
-                if self.rival_y - self.rival_h//2 > 0 and self.rival_dir_y == -1:
-                    self.rival_y -= self.base_speed
-                if self.rival_y + self.rival_h//2 < self.world_height and self.rival_dir_y == 1:
-                    self.rival_y += self.base_speed
-                # 終點判斷
-                if self.car_y - self.car_h//2 <= self.finish_line:
-                    self.running = False
-                    self.game_winner = '玩家'
-                elif self.rival_y - self.rival_h//2 <= self.finish_line:
-                    self.running = False
-                    self.game_winner = '對手'
-                # 畫面跟隨玩家
-                self.camera_offset = self.car_y - self.height // 2
-                self.camera_offset = max(0, min(self.camera_offset, self.world_height - self.height))
+    def run(self):
+        try:
+            while self.running:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT: self.running = False
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE: self.running = False
+                        if event.key == pygame.K_SPACE and self.state == STATE_RACING:
+                            if self.can_boost:
+                                self.is_boosting = True
+                                self.can_boost = False
+                                self.boost_time = time.time()
+                self.update()
                 self.draw()
-                self.master.after(30, self.update)
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            pygame.quit()
 
-            def draw(self):
-                self.canvas.delete('all')
-                # 賽道
-                self.canvas.create_rectangle(self.road_x, 0, self.road_x + self.road_w, self.height, fill='gray')
-                # 終點線
-                fy = self.finish_line - self.camera_offset
-                if 0 <= fy <= self.height:
-                    self.canvas.create_rectangle(self.road_x, fy, self.road_x + self.road_w, fy+6, fill='yellow')
-                    self.canvas.create_text(self.road_x + 30, fy+18, text='終點', fill='yellow', font=('Arial', 14))
-                # 賽道中線
-                for y in range(0, self.world_height, 40):
-                    sy = y - self.camera_offset
-                    if -20 <= sy <= self.height:
-                        self.canvas.create_rectangle(self.width//2 - 5, sy, self.width//2 + 5, sy+20, fill='white', width=0)
-                # 玩家車
-                x, y = self.car_x, self.car_y - self.camera_offset
-                self.canvas.create_rectangle(x - self.car_w//2, y - self.car_h//2, x + self.car_w//2, y + self.car_h//2, fill='blue', outline='black', width=2)
-                self.canvas.create_rectangle(x - 12, y - 25, x + 12, y - 5, fill='skyblue', outline='black')
-                self.canvas.create_oval(x - self.car_w//2 - 6, y - 20, x - self.car_w//2 + 6, y - 8, fill='black')
-                self.canvas.create_oval(x + self.car_w//2 - 6, y - 20, x + self.car_w//2 + 6, y - 8, fill='black')
-                self.canvas.create_oval(x - self.car_w//2 - 6, y + 20, x - self.car_w//2 + 6, y + 32, fill='black')
-                self.canvas.create_oval(x + self.car_w//2 - 6, y + 20, x + self.car_w//2 + 6, y + 32, fill='black')
-                # 對手車
-                rx, ry = self.rival_x, self.rival_y - self.camera_offset
-                self.canvas.create_rectangle(rx - self.rival_w//2, ry - self.rival_h//2, rx + self.rival_w//2, ry + self.rival_h//2, fill='green', outline='black', width=2)
-                self.canvas.create_rectangle(rx - 12, ry - 25, rx + 12, ry - 5, fill='lightgreen', outline='black')
-                self.canvas.create_oval(rx - self.rival_w//2 - 6, ry - 20, rx - self.rival_w//2 + 6, ry - 8, fill='black')
-                self.canvas.create_oval(rx + self.rival_w//2 - 6, ry - 20, rx + self.rival_w//2 + 6, ry - 8, fill='black')
-                self.canvas.create_oval(rx - self.rival_w//2 - 6, ry + 20, rx - self.rival_w//2 + 6, ry + 32, fill='black')
-                self.canvas.create_oval(rx + self.rival_w//2 - 6, ry + 20, rx + self.rival_w//2 + 6, ry + 32, fill='black')
-                # 障礙車
-                for ox, oy, color in self.obstacles:
-                    sy = oy - self.camera_offset
-                    if -self.obstacle_h <= sy <= self.height + self.obstacle_h:
-                        self.canvas.create_rectangle(ox - self.obstacle_w//2, sy - self.obstacle_h//2, ox + self.obstacle_w//2, sy + self.obstacle_h//2, fill=color, outline='black', width=2)
-                        self.canvas.create_rectangle(ox - 12, sy - 25, ox + 12, sy - 5, fill='pink', outline='black')
-                        self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy - 20, ox - self.obstacle_w//2 + 6, sy - 8, fill='black')
-                        self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy - 20, ox + self.obstacle_w//2 + 6, sy - 8, fill='black')
-                        self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy + 20, ox - self.obstacle_w//2 + 6, sy + 32, fill='black')
-                        self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy + 20, ox + self.obstacle_w//2 + 6, sy + 32, fill='black')
-                # 顯示勝利者
-                if not self.running and self.game_winner:
-                    self.canvas.create_text(self.width//2, self.height//2, text=f'{self.game_winner}獲勝！', fill='gold', font=('Arial', 32))
-                    self.canvas.create_text(self.width//2, self.height//2+40, text='按 Enter 重新開始', fill='yellow', font=('Arial', 18))
-
-        if __name__ == '__main__':
-            root = tk.Tk()
-            game = RacingGame(root)
-            root.mainloop()
-    def move_down(self, event):
-        speed = self.vertical_speed
-        if self.player_slow_timer > 0:
-            speed = int(self.vertical_speed * self.slow_factor)
-        if self.car_y + self.car_h//2 < self.world_height:
-            self.car_y += speed
-
-    def move_left(self, event):
-        move = self.fast_speed if self.is_fast else self.speed
-        if self.player_slow_timer > 0:
-            move = int(move * self.slow_factor)
-        if self.car_x - self.car_w//2 > self.road_x:
-            self.car_x -= move
-
-    def move_right(self, event):
-        move = self.fast_speed if self.is_fast else self.speed
-        if self.player_slow_timer > 0:
-            move = int(move * self.slow_factor)
-        if self.car_x + self.car_w//2 < self.road_x + self.road_w:
-            self.car_x += move
-
-    def shift_down(self, event):
-        self.is_fast = True
-
-    def shift_up(self, event):
-        self.is_fast = False
-
-    def restart_game(self, event):
-        if not self.running:
-            self.score = 0
-            self.car_x = self.width // 2
-            self.car_y = self.height - 100
-            self.obstacles = []
-            # 重設對手車
-            self.rival_x = self.width // 2
-            self.rival_y = 200
-            self.rival_dir_x = 1
-            self.rival_dir_y = 0
-            self.rival_move_counter = 0
-            self.running = True
-            self.update()
-
-    def spawn_obstacle(self):
-        x = random.randint(self.road_x + self.obstacle_w//2, self.road_x + self.road_w - self.obstacle_w//2)
-        # 隨機選擇顏色
-        color = random.choice(['red', 'orange', 'purple', 'brown', 'gray'])
-        self.obstacles.append([x, -self.obstacle_h, color])
-
-    def update(self):
-        if not self.running:
-            self.canvas.create_text(self.width//2, self.height//2, text='遊戲結束', fill='white', font=('Arial', 32))
-            self.canvas.create_text(self.width//2, self.height//2+40, text='按 Enter 重新開始', fill='yellow', font=('Arial', 18))
-            return
-        # 移動障礙物
-        for obs in self.obstacles:
-            obs[1] += self.obstacle_speed
-        # 移除超出世界範圍的障礙物
-        self.obstacles = [obs for obs in self.obstacles if obs[1] < self.world_height]
-        # 檢查玩家車碰撞障礙物
-        for obs in self.obstacles:
-            if (abs(obs[0] - self.car_x) < (self.obstacle_w + self.car_w)//2) and (abs(obs[1] - self.car_y) < (self.obstacle_h + self.car_h)//2):
-                # 玩家車撞到障礙物，彈開
-                if self.car_y > obs[1]:
-                    self.car_y = min(self.world_height - self.car_h//2, self.car_y + 40)
-                else:
-                    self.car_y = max(self.car_h//2, self.car_y - 40)
-
-        # 檢查對手車碰撞障礙物
-        for obs in self.obstacles:
-            if (abs(obs[0] - self.rival_x) < (self.obstacle_w + self.rival_w)//2) and (abs(obs[1] - self.rival_y) < (self.obstacle_h + self.rival_h)//2):
-                # 對手車撞到障礙物，彈開
-                if self.rival_y > obs[1]:
-                    self.rival_y = min(self.world_height - self.rival_h//2, self.rival_y + 40)
-                else:
-                    self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-
-        # 對手車隨機左右與前後移動
-        # 對手車自動穩定往終點前進
-        self.rival_move_counter += 1
-        # 讓對手車主要往上（終點），偶爾左右微調
-        if self.rival_move_counter % 20 == 0:
-            self.rival_dir_x = random.choice([-1, 0, 1])
-        self.rival_dir_y = -1  # 一直往上
-        rival_speed_x = self.rival_speed_x
-        rival_speed_y = self.rival_speed_y
-        if self.rival_slow_timer > 0:
-            rival_speed_x = int(self.rival_speed_x * self.slow_factor)
-            rival_speed_y = int(self.rival_speed_y * self.slow_factor)
-        self.rival_x += self.rival_dir_x * rival_speed_x
-        self.rival_y += self.rival_dir_y * rival_speed_y
-        # 限制對手車在賽道範圍內
-        if self.rival_x - self.rival_w//2 < self.road_x:
-            self.rival_x = self.road_x + self.rival_w//2
-        elif self.rival_x + self.rival_w//2 > self.road_x + self.road_w:
-            self.rival_x = self.road_x + self.road_w - self.rival_w//2
-        if self.rival_y - self.rival_h//2 < 0:
-            self.rival_y = self.rival_h//2
-        elif self.rival_y + self.rival_h//2 > self.world_height:
-            self.rival_y = self.world_height - self.rival_h//2
-
-        # 玩家車與對手車碰撞，雙方彈開並減速
-        if (abs(self.car_x - self.rival_x) < (self.car_w + self.rival_w)//2) and (abs(self.car_y - self.rival_y) < (self.car_h + self.rival_h)//2):
-            # 垂直方向彈開
-            if self.car_y < self.rival_y:
-                self.car_y = max(self.car_h//2, self.car_y - 40)
-                self.rival_y = min(self.height - self.rival_h//2, self.rival_y + 40)
-            else:
-                self.car_y = min(self.height - self.car_h//2, self.car_y + 40)
-                self.rival_y = max(self.rival_h//2, self.rival_y - 40)
-            # 水平方向彈開
-            if self.car_x < self.rival_x:
-                self.car_x = max(self.road_x + self.car_w//2, self.car_x - 40)
-                self.rival_x = min(self.road_x + self.road_w - self.rival_w//2, self.rival_x + 40)
-            else:
-                self.car_x = min(self.road_x + self.road_w - self.car_w//2, self.car_x + 40)
-                self.rival_x = max(self.road_x + self.rival_w//2, self.rival_x - 40)
-            # 雙方減速
-            self.player_slow_timer = self.slow_duration
-            self.rival_slow_timer = self.slow_duration
-
-        # 產生新障礙物（機率提高）
-        for _ in range(2):
-            if random.random() < 0.06:
-                self.spawn_obstacle()
-        # 計分
-        self.score += 1
-        self.score_label.config(text=f'分數: {self.score // 10}')
-
-        # 減速計時器遞減
-        if self.player_slow_timer > 0:
-            self.player_slow_timer -= 1
-        if self.rival_slow_timer > 0:
-            self.rival_slow_timer -= 1
-
-        # 終點判斷
-        if self.car_y - self.car_h//2 <= self.finish_line:
-            self.running = False
-            self.game_winner = '玩家'
-        elif self.rival_y - self.rival_h//2 <= self.finish_line:
-            self.running = False
-            self.game_winner = '對手'
-
-        # 計算畫面偏移量，讓玩家車盡量在畫面中央
-        self.camera_offset = self.car_y - self.height // 2
-        self.camera_offset = max(0, min(self.camera_offset, self.world_height - self.height))
-
-        self.draw()
-        self.master.after(30, self.update)
-
-    def draw(self):
-        self.canvas.delete('all')
-        # 畫賽道
-        self.canvas.create_rectangle(self.road_x, 0, self.road_x + self.road_w, self.height, fill='gray')
-        # 畫終點線（根據 camera_offset 調整）
-        fy = self.finish_line - self.camera_offset
-        if 0 <= fy <= self.height:
-            self.canvas.create_rectangle(self.road_x, fy, self.road_x + self.road_w, fy+6, fill='yellow')
-            self.canvas.create_text(self.road_x + 30, fy+18, text='終點', fill='yellow', font=('Arial', 14))
-        # 畫賽道中線
-        for y in range(0, self.world_height, 40):
-            sy = y - self.camera_offset
-            if -20 <= sy <= self.height:
-                self.canvas.create_rectangle(self.width//2 - 5, sy, self.width//2 + 5, sy+20, fill='white', width=0)
-        # 畫玩家車子（藍色）
-        x, y = self.car_x, self.car_y - self.camera_offset
-        self.canvas.create_rectangle(x - self.car_w//2, y - self.car_h//2, x + self.car_w//2, y + self.car_h//2, fill='blue', outline='black', width=2)
-        self.canvas.create_rectangle(x - 12, y - 25, x + 12, y - 5, fill='skyblue', outline='black')  # 車窗
-        self.canvas.create_oval(x - self.car_w//2 - 6, y - 20, x - self.car_w//2 + 6, y - 8, fill='black')  # 左輪
-        self.canvas.create_oval(x + self.car_w//2 - 6, y - 20, x + self.car_w//2 + 6, y - 8, fill='black')  # 右輪
-        self.canvas.create_oval(x - self.car_w//2 - 6, y + 20, x - self.car_w//2 + 6, y + 32, fill='black')  # 左輪
-        self.canvas.create_oval(x + self.car_w//2 - 6, y + 20, x + self.car_w//2 + 6, y + 32, fill='black')  # 右輪
-        # 畫對手車（綠色）
-        rx, ry = self.rival_x, self.rival_y - self.camera_offset
-        self.canvas.create_rectangle(rx - self.rival_w//2, ry - self.rival_h//2, rx + self.rival_w//2, ry + self.rival_h//2, fill='green', outline='black', width=2)
-        self.canvas.create_rectangle(rx - 12, ry - 25, rx + 12, ry - 5, fill='lightgreen', outline='black')
-        self.canvas.create_oval(rx - self.rival_w//2 - 6, ry - 20, rx - self.rival_w//2 + 6, ry - 8, fill='black')
-        self.canvas.create_oval(rx + self.rival_w//2 - 6, ry - 20, rx + self.rival_w//2 + 6, ry - 8, fill='black')
-        self.canvas.create_oval(rx - self.rival_w//2 - 6, ry + 20, rx - self.rival_w//2 + 6, ry + 32, fill='black')
-        self.canvas.create_oval(rx + self.rival_w//2 - 6, ry + 20, rx + self.rival_w//2 + 6, ry + 32, fill='black')
-        # 畫障礙物（多色車型）
-        for ox, oy, color in self.obstacles:
-            sy = oy - self.camera_offset
-            if -self.obstacle_h <= sy <= self.height + self.obstacle_h:
-                self.canvas.create_rectangle(ox - self.obstacle_w//2, sy - self.obstacle_h//2, ox + self.obstacle_w//2, sy + self.obstacle_h//2, fill=color, outline='black', width=2)
-                self.canvas.create_rectangle(ox - 12, sy - 25, ox + 12, sy - 5, fill='pink', outline='black')
-                self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy - 20, ox - self.obstacle_w//2 + 6, sy - 8, fill='black')
-                self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy - 20, ox + self.obstacle_w//2 + 6, sy - 8, fill='black')
-                self.canvas.create_oval(ox - self.obstacle_w//2 - 6, sy + 20, ox - self.obstacle_w//2 + 6, sy + 32, fill='black')
-                self.canvas.create_oval(ox + self.obstacle_w//2 - 6, sy + 20, ox + self.obstacle_w//2 + 6, sy + 32, fill='black')
-
-        # 顯示勝利者
-        if not self.running and self.game_winner:
-            self.canvas.create_text(self.width//2, self.height//2, text=f'{self.game_winner}獲勝！', fill='gold', font=('Arial', 32))
-            self.canvas.create_text(self.width//2, self.height//2+40, text='按 Enter 重新開始', fill='yellow', font=('Arial', 18))
-
-if __name__ == '__main__':
-    root = tk.Tk()
-    game = RacingGame(root)
-    root.mainloop()
+if __name__ == "__main__":
+    HardcoreRacing().run()
