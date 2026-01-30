@@ -5,12 +5,32 @@ import math
 class RacingGame:
     def __init__(self, master):
         self.master = master
+        self.countdown = 3  # 倒數秒數
+        self.countdown_active = True
+
         self.master.title('彎道賽車遊戲')
         self.width = 400
         self.height = 600
         self.road_w = 300
         self.road_x_base = (self.width - self.road_w) // 2
         self.finish_line = 80 * 40
+        self.world_height = 600 * 40
+        self.canvas = tk.Canvas(master, width=self.width, height=self.height, bg='darkgreen')
+        self.canvas.pack()
+        self.info_label = tk.Label(master, text='', font=('Arial', 14))
+        self.info_label.pack()
+
+        self.master.after(0, self.start_countdown)
+
+    def start_countdown(self):
+        if self.countdown > 0:
+            self.info_label.config(text=f'倒數 {self.countdown} 秒...')
+            self.countdown -= 1
+            self.master.after(1000, self.start_countdown)
+        else:
+            self.countdown_active = False
+            self.info_label.config(text='')
+    # (移除重複的 __init__ 方法)
         self.world_height = 600 * 40
         self.canvas = tk.Canvas(master, width=self.width, height=self.height, bg='darkgreen')
         self.canvas.pack()
@@ -96,6 +116,8 @@ class RacingGame:
             self.update()
 
     def move_player(self):
+        if self.countdown_active:
+            return  # 倒數時禁止移動
         # 判斷是否在賽道範圍
         road_x = self.get_road_x(self.car_y)
         on_road = (road_x + self.car_w//2 <= self.car_x <= road_x + self.road_w - self.car_w//2)
@@ -126,6 +148,9 @@ class RacingGame:
         elif self.fast_cooldown and 'space' not in self.pressed_keys:
             self.fast_cooldown = False
 
+        if self.countdown_active:
+            self.draw()
+            return
         if not self.running:
             self.draw()
             return
@@ -260,85 +285,6 @@ if __name__ == '__main__':
     root = tk.Tk()
     game = RacingGame(root)
     root.mainloop()
-
-
-# 簡單賽車遊戲
-import tkinter as tk
-import random
-
-class RacingGame:
-    def __init__(self, master):
-        self.master = master
-        import tkinter as tk
-        import random
-
-        class RacingGame:
-            def __init__(self, master):
-                self.master = master
-                self.master.title('賽車遊戲')
-                self.width = 400
-                self.height = 600
-                self.road_w = 300
-                self.road_x = (self.width - self.road_w) // 2
-                self.finish_line = 80 * 40  # 終點設更遠
-                self.world_height = 600 * 40  # 世界高度也加倍
-                self.canvas = tk.Canvas(master, width=self.width, height=self.height, bg='darkgreen')
-                self.canvas.pack()
-                self.score_label = tk.Label(master, text='', font=('Arial', 14))
-                self.score_label.pack()
-
-                # 玩家車
-                self.car_w = 40
-                self.car_h = 70
-                self.car_x = self.width // 2
-                self.car_y = self.world_height - 100
-
-                # 對手車
-                self.rival_w = 40
-                self.rival_h = 70
-                self.rival_x = self.width // 2 + 60
-                self.rival_y = self.world_height - 100
-                self.rival_dir_x = 0
-                self.rival_dir_y = 0
-
-                # 速度設定
-                self.base_speed = 20
-                self.is_fast = False
-                self.rival_speed = self.base_speed
-                self.player_speed = self.base_speed
-
-                # 障礙車
-                self.obstacle_w = 40
-                self.obstacle_h = 70
-                self.obstacle_speed = 7
-                self.obstacles = []  # [(x, y, color)]
-                self.max_obstacles = 10
-
-                self.running = True
-                self.game_winner = None
-                self.camera_offset = 0
-
-                self.pressed_keys = set()
-                self.master.bind('<KeyPress>', self.on_key_press)
-                self.master.bind('<KeyRelease>', self.on_key_release)
-                self.master.bind('<Return>', self.restart_game)
-                self.update()
-
-            def on_key_press(self, event):
-                self.pressed_keys.add(event.keysym)
-                if event.keysym in ('Shift_L', 'Shift_R'):
-                    self.is_fast = True
-
-            def on_key_release(self, event):
-                if event.keysym in self.pressed_keys:
-                    self.pressed_keys.remove(event.keysym)
-                if event.keysym in ('Shift_L', 'Shift_R'):
-                    self.is_fast = False
-
-            def move_player(self):
-                move = self.base_speed * (2 if self.is_fast else 1)
-                dx = dy = 0
-                if 'Left' in self.pressed_keys and self.car_x - self.car_w//2 > self.road_x:
                     dx -= move
                 if 'Right' in self.pressed_keys and self.car_x + self.car_w//2 < self.road_x + self.road_w:
                     dx += move
