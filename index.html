@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>貪吃蛇遊戲</title>
+    <style>
+        body {
+            background: #222;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            text-align: center;
+        }
+        #gameCanvas {
+            background: #000;
+            display: block;
+            margin: 20px auto;
+            border: 2px solid #fff;
+        }
+        #score {
+            font-size: 20px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>貪吃蛇遊戲</h1>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div id="score">分數: 0</div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const cellSize = 20;
+        let snake = [ {x: 5, y: 5}, {x: 4, y: 5}, {x: 3, y: 5} ];
+        let direction = 'RIGHT';
+        let food = {x: 10, y: 10};
+        let score = 0;
+        let running = true;
+
+        function drawCell(x, y, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // 畫蛇
+            snake.forEach((part, idx) => {
+                drawCell(part.x, part.y, idx === 0 ? 'lime' : 'green');
+            });
+            // 畫食物
+            drawCell(food.x, food.y, 'red');
+        }
+
+        function placeFood() {
+            while (true) {
+                let x = Math.floor(Math.random() * (canvas.width / cellSize));
+                let y = Math.floor(Math.random() * (canvas.height / cellSize));
+                if (!snake.some(part => part.x === x && part.y === y)) {
+                    food = {x, y};
+                    break;
+                }
+            }
+        }
+
+        function moveSnake() {
+            let head = {...snake[0]};
+            if (direction === 'UP') head.y--;
+            if (direction === 'DOWN') head.y++;
+            if (direction === 'LEFT') head.x--;
+            if (direction === 'RIGHT') head.x++;
+            snake.unshift(head);
+            if (head.x === food.x && head.y === food.y) {
+                score++;
+                document.getElementById('score').textContent = '分數: ' + score;
+                placeFood();
+            } else {
+                snake.pop();
+            }
+        }
+
+        function checkCollision() {
+            let head = snake[0];
+            // 撞牆
+            if (head.x < 0 || head.x >= canvas.width / cellSize || head.y < 0 || head.y >= canvas.height / cellSize) {
+                return true;
+            }
+            // 撞到自己
+            for (let i = 1; i < snake.length; i++) {
+                if (snake[i].x === head.x && snake[i].y === head.y) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        document.addEventListener('keydown', e => {
+            const opposites = {UP: 'DOWN', DOWN: 'UP', LEFT: 'RIGHT', RIGHT: 'LEFT'};
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                let newDir = e.key.replace('Arrow', '').toUpperCase();
+                if (opposites[newDir] !== direction) {
+                    direction = newDir;
+                }
+            }
+        });
+
+        function gameLoop() {
+            if (!running) return;
+            moveSnake();
+            if (checkCollision()) {
+                running = false;
+                ctx.fillStyle = 'white';
+                ctx.font = '32px Arial';
+                ctx.fillText('遊戲結束', canvas.width/2 - 80, canvas.height/2);
+                ctx.font = '20px Arial';
+                ctx.fillText('按 Enter 重新開始', canvas.width/2 - 100, canvas.height/2 + 40);
+                return;
+            }
+            draw();
+            setTimeout(gameLoop, 100);
+        }
+
+        function restartGame() {
+            snake = [ {x: 5, y: 5}, {x: 4, y: 5}, {x: 3, y: 5} ];
+            direction = 'RIGHT';
+            score = 0;
+            running = true;
+            document.getElementById('score').textContent = '分數: 0';
+            placeFood();
+            draw();
+            gameLoop();
+        }
+
+        document.addEventListener('keydown', e => {
+            const opposites = {UP: 'DOWN', DOWN: 'UP', LEFT: 'RIGHT', RIGHT: 'LEFT'};
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                let newDir = e.key.replace('Arrow', '').toUpperCase();
+                if (opposites[newDir] !== direction && running) {
+                    direction = newDir;
+                }
+            }
+            if (e.key === 'Enter' && !running) {
+                restartGame();
+            }
+        });
+
+        draw();
+        gameLoop();
+    </script>
+</body>
+</html>
